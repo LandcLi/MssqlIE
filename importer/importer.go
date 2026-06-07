@@ -13,23 +13,39 @@ import (
 	"github.com/mssql_ie/utils"
 )
 
+// noopReadCloser 包装 io.Reader 为 io.ReadCloser（Close 无操作）
+type noopReadCloser struct {
+	io.Reader
+}
+
+func (n *noopReadCloser) Close() error { return nil }
+
 // CSVToTable 从CSV文件导入数据到指定表
 func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 	// 参数校验
+	var err error
 	if err := validateImportConfig(cfg); err != nil {
 		return fmt.Errorf("配置校验失败: %w", err)
 	}
 
-	// 打开CSV文件
-	file, err := os.Open(cfg.CSVPath)
-	if err != nil {
-		return fmt.Errorf("打开CSV文件失败: %w", err)
+	// 打开CSV输入：优先使用 Input 流，其次打开文件
+	var readFile io.ReadCloser
+	if cfg.Input != nil {
+		readFile = &noopReadCloser{Reader: cfg.Input}
+	} else {
+		readFile, err = os.Open(cfg.CSVPath)
+		if err != nil {
+			return fmt.Errorf("打开CSV文件失败: %w", err)
+		}
 	}
-	defer file.Close()
+	defer readFile.Close()
 
 	// 应用字符集转换
-	reader := csv.NewReader(utils.GetTransformersRead(file, cfg.FileCharset))
-	reader.Comma = cfg.Delimiter
+	csvReader := csv.NewReader(utils.GetTransformersRead(readFile, cfg.FileCharset))
+	csvReader.Comma = cfg.Delimiter
+	if csvReader.Comma == 0 {
+		csvReader.Comma = ',' // API 调用时未设置分隔符，默认逗号
+	}
 
 	// 读取列名
 	var columnInfos []ColumnInfo
@@ -41,7 +57,7 @@ func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 	var headerRow []string
 	var insertCols = make([]ColumnInfo, 0, len(columnInfos))
 	if cfg.Header {
-		headerRow, err = reader.Read()
+		headerRow, err = csvReader.Read()
 		if err != nil {
 			return fmt.Errorf("读取CSV列名失败: %w", err)
 		}
@@ -89,7 +105,7 @@ func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 		}
 	}
 	// 开始事务批量插入
-	return batchInsert(db, insertSQL, reader, insertCols, cfg.Table, cfg.Batch, cfg.SkipErrors, false, cfg.IdentityInsert, cfg.BinaryFormat, cfg.NullMarker)
+	return batchInsert(db, insertSQL, csvReader, insertCols, cfg.Table, cfg.Batch, cfg.SkipErrors, false, cfg.IdentityInsert, cfg.BinaryFormat, cfg.NullMarker)
 }
 
 // validateImportConfig 校验导入配置
@@ -97,8 +113,8 @@ func validateImportConfig(cfg config.ImportConfig) error {
 	if cfg.Table == "" {
 		return fmt.Errorf("目标表名不能为空")
 	}
-	if cfg.CSVPath == "" {
-		return fmt.Errorf("CSV文件路径不能为空")
+	if cfg.CSVPath == "" && cfg.Input == nil {
+		return fmt.Errorf("CSV文件路径或输入流必须设置一个")
 	}
 	if cfg.Batch <= 0 {
 		return fmt.Errorf("批量大小必须大于0（建议500-2000）")

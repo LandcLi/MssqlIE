@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -16,13 +17,20 @@ import (
 	"github.com/mssql_ie/utils"
 )
 
+// noopWriteCloser 包装 io.Writer 为 io.WriteCloser（Close 无操作）
+type noopWriteCloser struct {
+	io.Writer
+}
+
+func (n *noopWriteCloser) Close() error { return nil }
+
 // TableToCSV 将指定表的数据导出到CSV文件
 func TableToCSV(db *sql.DB, cfg config.ExportConfig) error {
 	if cfg.Table == "" {
 		return fmt.Errorf("表名不能为空")
 	}
-	if cfg.CSVPath == "" {
-		return fmt.Errorf("CSV文件路径不能为空")
+	if cfg.CSVPath == "" && cfg.Output == nil {
+		return fmt.Errorf("CSV文件路径或输出流必须设置一个")
 	}
 
 	// 安全地转义表名
@@ -49,8 +57,8 @@ func SQLToCSV(db *sql.DB, cfg config.ExportConfig) error {
 	if cfg.SQL == "" {
 		return fmt.Errorf("SQL语句不能为空")
 	}
-	if cfg.CSVPath == "" {
-		return fmt.Errorf("CSV文件路径不能为空")
+	if cfg.CSVPath == "" && cfg.Output == nil {
+		return fmt.Errorf("CSV文件路径或输出流必须设置一个")
 	}
 
 	return exportQueryResultToCSV(db, cfg.SQL, cfg)
@@ -88,10 +96,16 @@ func exportQueryResultToCSV(db *sql.DB, query string, cfg config.ExportConfig) e
 		colTypeNames[i] = ct.DatabaseTypeName()
 	}
 
-	// 创建CSV文件
-	file, err := os.Create(cfg.CSVPath)
-	if err != nil {
-		return fmt.Errorf("创建CSV文件失败: %w", err)
+	// 创建CSV输出：优先使用 Output 流，其次创建文件
+	var file io.WriteCloser
+	if cfg.Output != nil {
+		// 用户提供了输出流，包装为 NopCloser 以统一 Close 逻辑
+		file = &noopWriteCloser{Writer: cfg.Output}
+	} else {
+		file, err = os.Create(cfg.CSVPath)
+		if err != nil {
+			return fmt.Errorf("创建CSV文件失败: %w", err)
+		}
 	}
 	defer file.Close()
 
@@ -99,6 +113,9 @@ func exportQueryResultToCSV(db *sql.DB, query string, cfg config.ExportConfig) e
 	transformer := utils.GetTransformersWrite(file, cfg.FileCharset)
 	writer := csv.NewWriter(transformer)
 	writer.Comma = cfg.Delimiter
+	if writer.Comma == 0 {
+		writer.Comma = ',' // API 调用时未设置分隔符，默认逗号
+	}
 	defer writer.Flush()
 
 	// 写入列标题
@@ -148,7 +165,11 @@ func exportQueryResultToCSV(db *sql.DB, query string, cfg config.ExportConfig) e
 		return fmt.Errorf("遍历行数据异常: %w", err)
 	}
 
-	fmt.Printf("✅ 导出完成，共 %d 行数据，文件路径: %s\n", rowCount, cfg.CSVPath)
+	if cfg.CSVPath != "" {
+		fmt.Printf("✅ 导出完成，共 %d 行数据，文件路径: %s\n", rowCount, cfg.CSVPath)
+	} else {
+		fmt.Printf("✅ 导出完成，共 %d 行数据\n", rowCount)
+	}
 	return nil
 }
 

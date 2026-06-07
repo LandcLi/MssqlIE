@@ -413,7 +413,7 @@ func validateImportFlags(c *cli.Context) error {
 	}
 
 	if csv == "" {
-		return cli.Exit("错误: 必须指定 --csv 参数", 1)
+		return cli.Exit("错误: 必须指定 --csv 参数（或使用 API 传入 Input 流）", 1)
 	}
 
 	if batch <= 0 {
