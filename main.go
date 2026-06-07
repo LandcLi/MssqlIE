@@ -128,15 +128,20 @@ func main() {
 						Usage:   "二进制数格式 {hex, base64, raw}",
 						Value:   "raw",
 					},
-					&cli.StringFlag{
-						Name:    "file-charset",
-						Aliases: []string{"fc"},
-						Usage:   "文件的字符集 {utf8,gbk,latinl}",
-						Value:   "utf8",
-					},
+				&cli.StringFlag{
+					Name:    "file-charset",
+					Aliases: []string{"fc"},
+					Usage:   "文件的字符集 {utf8,gbk,latinl}",
+					Value:   "utf8",
 				},
-				Before: validateExportFlags,
-				Action: exportCommand,
+				&cli.StringFlag{
+					Name:  "null-marker",
+					Usage: "NULL 值在 CSV 中的标记字符串，为空时用空字段表示 NULL",
+					Value: "",
+				},
+			},
+			Before: validateExportFlags,
+			Action: exportCommand,
 			},
 			{
 				Name:    "import",
@@ -176,26 +181,36 @@ func main() {
 						Usage: "导入前清空表",
 						Value: false,
 					},
-					&cli.BoolFlag{
-						Name:  "skip-errors",
-						Usage: "跳过错误行继续导入",
-						Value: false,
-					},
-					&cli.StringFlag{
-						Name:    "binary-format",
-						Aliases: []string{"bf"},
-						Usage:   "二进制数格式 {hex, base64, raw}",
-						Value:   "raw",
-					},
-					&cli.StringFlag{
-						Name:    "file-charset",
-						Aliases: []string{"fc"},
-						Usage:   "文件的字符集 {utf8,gbk,latinl}",
-						Value:   "utf8",
-					},
+				&cli.BoolFlag{
+					Name:  "skip-errors",
+					Usage: "跳过错误行继续导入",
+					Value: false,
 				},
-				Before: validateImportFlags,
-				Action: importCommand,
+				&cli.BoolFlag{
+					Name:  "identity-insert",
+					Usage: "允许为自增列插入显式值 (SET IDENTITY_INSERT ON)",
+					Value: false,
+				},
+				&cli.StringFlag{
+					Name:    "binary-format",
+					Aliases: []string{"bf"},
+					Usage:   "二进制数格式 {hex, base64, raw}",
+					Value:   "raw",
+				},
+				&cli.StringFlag{
+					Name:    "file-charset",
+					Aliases: []string{"fc"},
+					Usage:   "文件的字符集 {utf8,gbk,latinl}",
+					Value:   "utf8",
+				},
+				&cli.StringFlag{
+					Name:  "null-marker",
+					Usage: "CSV 中代表 NULL 的字符串，为空时空字段视为 NULL",
+					Value: "",
+				},
+			},
+			Before: validateImportFlags,
+			Action: importCommand,
 			},
 			{
 				Name:    "test",
@@ -274,6 +289,7 @@ func exportCommand(c *cli.Context) error {
 		Limit:        c.Int("limit"),
 		BinaryFormat: c.String("binary-format"),
 		FileCharset:  c.String("file-charset"),
+		NullMarker:   c.String("null-marker"),
 	}
 
 	if cfg.Table != "" {
@@ -310,15 +326,17 @@ func importCommand(c *cli.Context) error {
 	}
 
 	cfg := config.ImportConfig{
-		Table:        c.String("table"),
-		CSVPath:      c.String("csv"),
-		Batch:        c.Int("batch"),
-		Header:       c.Bool("header"),
-		Delimiter:    delimiter,
-		Truncate:     c.Bool("truncate"),
-		SkipErrors:   c.Bool("skip-errors"),
-		BinaryFormat: c.String("binary-format"),
-		FileCharset:  c.String("file-charset"),
+		Table:          c.String("table"),
+		CSVPath:        c.String("csv"),
+		Batch:          c.Int("batch"),
+		Header:         c.Bool("header"),
+		Delimiter:      delimiter,
+		Truncate:       c.Bool("truncate"),
+		SkipErrors:     c.Bool("skip-errors"),
+		IdentityInsert: c.Bool("identity-insert"),
+		BinaryFormat:   c.String("binary-format"),
+		FileCharset:    c.String("file-charset"),
+		NullMarker:     c.String("null-marker"),
 	}
 
 	if err := importer.CSVToTable(db, cfg); err != nil {
@@ -395,7 +413,7 @@ func validateImportFlags(c *cli.Context) error {
 	}
 
 	if csv == "" {
-		return cli.Exit("错误: 必须指定 --csv 参数", 1)
+		return cli.Exit("错误: 必须指定 --csv 参数（或使用 API 传入 Input 流）", 1)
 	}
 
 	if batch <= 0 {

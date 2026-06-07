@@ -1,6 +1,8 @@
 // config/config.go
 package config
 
+import "io"
+
 // DBConfig 数据库连接配置
 type DBConfig struct {
 	Server   string
@@ -23,17 +25,22 @@ type ExportConfig struct {
 	Limit        int
 	BinaryFormat string
 	FileCharset  string
+	NullMarker   string    // NULL 值在 CSV 中的标记，空字符串表示用空字段
+	Output       io.Writer // 可选: 直接写入流，优先级高于 CSVPath
 }
 
 // ImportConfig 导入配置
 type ImportConfig struct {
-	Table        string
-	CSVPath      string
-	Batch        int
-	Header       bool
-	Delimiter    rune
-	Truncate     bool
-	SkipErrors   bool
-	BinaryFormat string
-	FileCharset  string
+	Table          string
+	CSVPath        string
+	Batch          int
+	Header         bool
+	Delimiter      rune
+	Truncate       bool
+	SkipErrors     bool
+	IdentityInsert bool
+	BinaryFormat   string
+	FileCharset    string
+	NullMarker     string    // CSV 中代表 NULL 的字符串，空字符串时空字段=null
+	Input          io.Reader // 可选: 从流读取，优先级高于 CSVPath
 }

@@ -13,23 +13,39 @@ import (
 	"github.com/mssql_ie/utils"
 )
 
+// noopReadCloser 包装 io.Reader 为 io.ReadCloser（Close 无操作）
+type noopReadCloser struct {
+	io.Reader
+}
+
+func (n *noopReadCloser) Close() error { return nil }
+
 // CSVToTable 从CSV文件导入数据到指定表
 func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 	// 参数校验
+	var err error
 	if err := validateImportConfig(cfg); err != nil {
 		return fmt.Errorf("配置校验失败: %w", err)
 	}
 
-	// 打开CSV文件
-	file, err := os.Open(cfg.CSVPath)
-	if err != nil {
-		return fmt.Errorf("打开CSV文件失败: %w", err)
+	// 打开CSV输入：优先使用 Input 流，其次打开文件
+	var readFile io.ReadCloser
+	if cfg.Input != nil {
+		readFile = &noopReadCloser{Reader: cfg.Input}
+	} else {
+		readFile, err = os.Open(cfg.CSVPath)
+		if err != nil {
+			return fmt.Errorf("打开CSV文件失败: %w", err)
+		}
 	}
-	defer file.Close()
+	defer readFile.Close()
 
 	// 应用字符集转换
-	reader := csv.NewReader(utils.GetTransformersRead(file, cfg.FileCharset))
-	reader.Comma = cfg.Delimiter
+	csvReader := csv.NewReader(utils.GetTransformersRead(readFile, cfg.FileCharset))
+	csvReader.Comma = cfg.Delimiter
+	if csvReader.Comma == 0 {
+		csvReader.Comma = ',' // API 调用时未设置分隔符，默认逗号
+	}
 
 	// 读取列名
 	var columnInfos []ColumnInfo
@@ -41,14 +57,11 @@ func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 	var headerRow []string
 	var insertCols = make([]ColumnInfo, 0, len(columnInfos))
 	if cfg.Header {
-		headerRow, err = reader.Read()
+		headerRow, err = csvReader.Read()
 		if err != nil {
 			return fmt.Errorf("读取CSV列名失败: %w", err)
 		}
-		// 检查CSV列名是否与数据库列名匹配
-		if len(headerRow) != len(columnInfos) {
-			return fmt.Errorf("CSV列数 %d 与数据库列数 %d 不匹配", len(headerRow), len(columnInfos))
-		}
+		// 通过列名匹配，不需要列数完全一致
 		for _, col := range headerRow {
 			found := false
 			for _, dbCol := range columnInfos {
@@ -62,11 +75,15 @@ func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 				return fmt.Errorf("CSV列 %s 与数据库列名不匹配", col)
 			}
 		}
+		if len(insertCols) == 0 {
+			return fmt.Errorf("CSV列名与数据库列名无匹配")
+		}
 	} else {
 		headerRow = make([]string, len(columnInfos))
 		for i, col := range columnInfos {
 			headerRow[i] = col.Name
 		}
+		insertCols = columnInfos // 修复: 无表头时填充 insertCols
 	}
 
 	// 安全地转义列名
@@ -88,7 +105,7 @@ func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 		}
 	}
 	// 开始事务批量插入
-	return batchInsert(db, insertSQL, reader, insertCols, cfg.Batch, cfg.SkipErrors, !cfg.Header, cfg.BinaryFormat)
+	return batchInsert(db, insertSQL, csvReader, insertCols, cfg.Table, cfg.Batch, cfg.SkipErrors, false, cfg.IdentityInsert, cfg.BinaryFormat, cfg.NullMarker)
 }
 
 // validateImportConfig 校验导入配置
@@ -96,8 +113,8 @@ func validateImportConfig(cfg config.ImportConfig) error {
 	if cfg.Table == "" {
 		return fmt.Errorf("目标表名不能为空")
 	}
-	if cfg.CSVPath == "" {
-		return fmt.Errorf("CSV文件路径不能为空")
+	if cfg.CSVPath == "" && cfg.Input == nil {
+		return fmt.Errorf("CSV文件路径或输入流必须设置一个")
 	}
 	if cfg.Batch <= 0 {
 		return fmt.Errorf("批量大小必须大于0（建议500-2000）")
@@ -109,6 +126,7 @@ type ColumnInfo struct {
 	Name     string
 	DataType string
 	Nullable bool
+	CharLen  int // CHARACTER_MAXIMUM_LENGTH, -1 for MAX, 0 for unknown
 }
 
 // getTableColumns 从数据库获取表的列名
@@ -121,7 +139,7 @@ func getTableColumns(db *sql.DB, tableName string) ([]ColumnInfo, error) {
 
 	query := fmt.Sprintf(`
 		/* mssql_ie tool query for check column*/
-		SELECT COLUMN_NAME ,DATA_TYPE,IS_NULLABLE
+		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COALESCE(CHARACTER_MAXIMUM_LENGTH, 0)
 		FROM INFORMATION_SCHEMA.COLUMNS 
 		WHERE TABLE_SCHEMA = COALESCE(PARSENAME('%s', 2), 'dbo')
 			AND TABLE_NAME = PARSENAME('%s', 1)
@@ -138,10 +156,12 @@ func getTableColumns(db *sql.DB, tableName string) ([]ColumnInfo, error) {
 	for rows.Next() {
 		var col ColumnInfo
 		var nullableStr string
-		if err := rows.Scan(&col.Name, &col.DataType, &nullableStr); err != nil {
+		var charLen int
+		if err := rows.Scan(&col.Name, &col.DataType, &nullableStr, &charLen); err != nil {
 			return nil, err
 		}
 		col.Nullable = nullableStr == "YES"
+		col.CharLen = charLen
 		columns = append(columns, col)
 	}
 
@@ -191,7 +211,7 @@ func buildInsertSQL(table string, safeCols []string) (string, error) {
 }
 
 // batchInsert 批量插入数据
-func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []ColumnInfo, batchSize int, skipErrors, skipFirstRow bool, binaryFormat string) error {
+func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []ColumnInfo, tableName string, batchSize int, skipErrors, skipFirstRow, identityInsert bool, binaryFormat string, nullMarker string) error {
 	// 开始事务
 	tx, err := db.Begin()
 	if err != nil {
@@ -205,6 +225,20 @@ func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []Co
 			panic(p) // 重新抛出panic
 		}
 	}()
+
+	// 如果需要允许自增列插入，在事务内启用
+	if identityInsert {
+		safeTable, err := utils.EscapeQualifiedName(tableName)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("转义表名失败: %w", err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s ON", safeTable)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("启用 IDENTITY_INSERT 失败: %w", err)
+		}
+		fmt.Println("ℹ️  已启用 IDENTITY_INSERT")
+	}
 
 	// 预处理插入语句
 	stmt, err := tx.Prepare(insertSQL)
@@ -254,18 +288,33 @@ func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []Co
 		// 准备参数
 		args := make([]interface{}, len(row))
 		for i, v := range row {
-			if v == "" {
-				args[i] = nil
-			} else {
-				args[i], err = convertValue(v, safeCols[i], binaryFormat)
-				if err != nil {
-					if skipErrors {
-						errorRows = append(errorRows, rowNum)
-						continue
-					}
-					tx.Rollback()
-					return fmt.Errorf("转换值失败(行%d,列%d): %w", rowNum, i+1, err)
+			if nullMarker != "" {
+				// 自定义 NULL 标记模式：仅 nullMarker 代表 NULL，空串保持为空串
+				if v == nullMarker {
+					setArgToNull(&args[i], safeCols[i])
+				} else {
+					args[i], err = convertValue(v, safeCols[i], binaryFormat)
 				}
+			} else {
+				// 传统模式：空字段 = NULL
+				if v == "" {
+					if safeCols[i].Nullable {
+						setArgToNull(&args[i], safeCols[i])
+					} else {
+						args[i] = getDefaultValue(safeCols[i].DataType)
+					}
+				} else {
+					args[i], err = convertValue(v, safeCols[i], binaryFormat)
+				}
+			}
+			if err != nil {
+				if skipErrors {
+					errorRows = append(errorRows, rowNum)
+					err = nil // reset err for next iteration
+					continue
+				}
+				tx.Rollback()
+				return fmt.Errorf("转换值失败(行%d,列%d): %w", rowNum, i+1, err)
 			}
 		}
 
@@ -292,6 +341,15 @@ func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []Co
 			tx, err = db.Begin()
 			if err != nil {
 				return fmt.Errorf("重新开启事务失败: %w", err)
+			}
+
+			// 每个新事务都需要重新启用 IDENTITY_INSERT（连接可能不同）
+			if identityInsert {
+				safeTable, _ := utils.EscapeQualifiedName(tableName)
+				if _, err := tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s ON", safeTable)); err != nil {
+					tx.Rollback()
+					return fmt.Errorf("启用 IDENTITY_INSERT 失败: %w", err)
+				}
 			}
 
 			// 重新预处理语句
@@ -324,9 +382,6 @@ func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []Co
 
 func convertValue(value string, col ColumnInfo, binaryFormat string) (interface{}, error) {
 	if value == "" {
-		if col.Nullable {
-			return nil, nil
-		}
 		return getDefaultValue(col.DataType), nil
 	}
 	switch strings.ToLower(col.DataType) {
@@ -387,6 +442,24 @@ func convertBinary(value string, binaryFormat string) ([]byte, error) {
 		return []byte(value), nil
 	}
 }
+// setArgToNull 将参数设为 NULL（二进制类型用带类型 nil 以避免 go-mssqldb 误用 nvarchar）
+func setArgToNull(arg *interface{}, col ColumnInfo) {
+	if isBinaryType(col.DataType) {
+		var b []byte = nil
+		*arg = b
+	} else {
+		*arg = nil
+	}
+}
+
+func isBinaryType(dataType string) bool {
+	switch strings.ToLower(dataType) {
+	case "binary", "varbinary", "image":
+		return true
+	}
+	return false
+}
+
 func getDefaultValue(dataType string) interface{} {
 	switch strings.ToLower(dataType) {
 	case "int", "smallint", "tinyint", "bigint", "numeric", "decimal", "real", "float":
