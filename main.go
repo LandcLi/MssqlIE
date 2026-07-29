@@ -128,21 +128,21 @@ func main() {
 						Usage:   "二进制数格式 {hex, base64, raw}",
 						Value:   "raw",
 					},
-				&cli.StringFlag{
-					Name:    "file-charset",
-					Aliases: []string{"fc"},
-					Usage:   "文件的字符集 {utf8,gbk,latinl}",
-					Value:   "utf8",
-				},
-				&cli.StringFlag{
-					Name:  "null-marker",
-					Usage: "NULL 值在 CSV 中的标记字符串，为空时用空字段表示 NULL",
-					Value: "",
-				},
+			&cli.StringFlag{
+				Name:    "file-charset",
+				Aliases: []string{"fc"},
+				Usage:   "文件的字符集 {utf8,gbk,latin1}",
+				Value:   "utf8",
 			},
-			Before: validateExportFlags,
-			Action: exportCommand,
+			&cli.StringFlag{
+				Name:  "null-marker",
+				Usage: "NULL 值在 CSV 中的标记字符串，为空时用空字段表示 NULL",
+				Value: "",
 			},
+		},
+		Before: validateExportFlags,
+		Action: exportCommand,
+	},
 			{
 				Name:    "import",
 				Aliases: []string{"i"},
@@ -176,42 +176,42 @@ func main() {
 						Usage: "CSV分隔符",
 						Value: ",",
 					},
-					&cli.BoolFlag{
-						Name:  "truncate",
-						Usage: "导入前清空表",
-						Value: false,
-					},
-				&cli.BoolFlag{
-					Name:  "skip-errors",
-					Usage: "跳过错误行继续导入",
-					Value: false,
-				},
-				&cli.BoolFlag{
-					Name:  "identity-insert",
-					Usage: "允许为自增列插入显式值 (SET IDENTITY_INSERT ON)",
-					Value: false,
-				},
-				&cli.StringFlag{
-					Name:    "binary-format",
-					Aliases: []string{"bf"},
-					Usage:   "二进制数格式 {hex, base64, raw}",
-					Value:   "raw",
-				},
-				&cli.StringFlag{
-					Name:    "file-charset",
-					Aliases: []string{"fc"},
-					Usage:   "文件的字符集 {utf8,gbk,latinl}",
-					Value:   "utf8",
-				},
-				&cli.StringFlag{
-					Name:  "null-marker",
-					Usage: "CSV 中代表 NULL 的字符串，为空时空字段视为 NULL",
-					Value: "",
-				},
+			&cli.BoolFlag{
+				Name:  "truncate",
+				Usage: "导入前清空表",
+				Value: false,
 			},
-			Before: validateImportFlags,
-			Action: importCommand,
+			&cli.BoolFlag{
+				Name:  "skip-errors",
+				Usage: "跳过错误行继续导入",
+				Value: false,
 			},
+			&cli.BoolFlag{
+				Name:  "identity-insert",
+				Usage: "允许为自增列插入显式值 (SET IDENTITY_INSERT ON)",
+				Value: false,
+			},
+			&cli.StringFlag{
+				Name:    "binary-format",
+				Aliases: []string{"bf"},
+				Usage:   "二进制数格式 {hex, base64, raw}",
+				Value:   "raw",
+			},
+			&cli.StringFlag{
+				Name:    "file-charset",
+				Aliases: []string{"fc"},
+				Usage:   "文件的字符集 {utf8,gbk,latin1}",
+				Value:   "utf8",
+			},
+			&cli.StringFlag{
+				Name:  "null-marker",
+				Usage: "CSV 中代表 NULL 的字符串，为空时空字段视为 NULL",
+				Value: "",
+			},
+		},
+		Before: validateImportFlags,
+		Action: importCommand,
+	},
 			{
 				Name:    "test",
 				Aliases: []string{"t"},
@@ -231,7 +231,7 @@ func main() {
 		},
 		ExitErrHandler: func(c *cli.Context, err error) {
 			if err != nil {
-				fmt.Fprintf(c.App.Writer, "❌ 错误: %v\n", err)
+				fmt.Fprintf(c.App.Writer, "[ERROR] %v\n", err)
 			}
 		},
 	}
@@ -302,7 +302,7 @@ func exportCommand(c *cli.Context) error {
 		}
 	}
 
-	fmt.Printf("✅ 导出成功: 数据已保存到 %s\n", cfg.CSVPath)
+	fmt.Printf("[OK] 导出成功: 数据已保存到 %s\n", cfg.CSVPath)
 	return nil
 }
 
@@ -343,7 +343,7 @@ func importCommand(c *cli.Context) error {
 		return fmt.Errorf("导入失败: %w", err)
 	}
 
-	fmt.Printf("✅ 导入成功: 数据已导入到表 %s\n", cfg.Table)
+	fmt.Printf("[OK] 导入成功: 数据已导入到表 %s\n", cfg.Table)
 	return nil
 }
 
@@ -366,7 +366,7 @@ func testConnection(c *cli.Context) error {
 		return fmt.Errorf("查询数据库信息失败: %w", err)
 	}
 
-	fmt.Println("✅ 数据库连接测试成功!")
+	fmt.Println("[OK] 数据库连接测试成功!")
 	fmt.Printf("   数据库: %s\n", dbName)
 	fmt.Printf("   服务器: %s:%d\n", c.String("server"), c.Int("port"))
 	fmt.Printf("   版本: %s\n", version)

@@ -77,7 +77,6 @@ func buildConnStr(cfg config.DBConfig) (string, error) {
 	query := url.Values{}
 	if len(cfg.Charset) > 0 {
 		query.Add("charset", cfg.Charset)
-
 	}
 	mssqlConfig.URL().RawQuery = query.Encode()
 	return mssqlConfig.URL().String(), nil

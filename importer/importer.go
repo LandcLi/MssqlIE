@@ -105,7 +105,19 @@ func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 		}
 	}
 	// 开始事务批量插入
-	return batchInsert(db, insertSQL, csvReader, insertCols, cfg.Table, cfg.Batch, cfg.SkipErrors, false, cfg.IdentityInsert, cfg.BinaryFormat, cfg.NullMarker)
+	return batchInsert(BatchInsertConfig{
+		DB:             db,
+		InsertSQL:      insertSQL,
+		Reader:         csvReader,
+		Columns:        insertCols,
+		TableName:      cfg.Table,
+		BatchSize:      cfg.Batch,
+		SkipErrors:     cfg.SkipErrors,
+		SkipFirstRow:   false,
+		IdentityInsert: cfg.IdentityInsert,
+		BinaryFormat:   cfg.BinaryFormat,
+		NullMarker:     cfg.NullMarker,
+	})
 }
 
 // validateImportConfig 校验导入配置
@@ -210,8 +222,34 @@ func buildInsertSQL(table string, safeCols []string) (string, error) {
 	), nil
 }
 
+// BatchInsertConfig 批量插入配置
+type BatchInsertConfig struct {
+	DB             *sql.DB
+	InsertSQL      string
+	Reader         *csv.Reader
+	Columns        []ColumnInfo
+	TableName      string
+	BatchSize      int
+	SkipErrors     bool
+	SkipFirstRow   bool
+	IdentityInsert bool
+	BinaryFormat   string
+	NullMarker     string
+}
+
 // batchInsert 批量插入数据
-func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []ColumnInfo, tableName string, batchSize int, skipErrors, skipFirstRow, identityInsert bool, binaryFormat string, nullMarker string) error {
+func batchInsert(cfg BatchInsertConfig) error {
+	db := cfg.DB
+	insertSQL := cfg.InsertSQL
+	reader := cfg.Reader
+	safeCols := cfg.Columns
+	tableName := cfg.TableName
+	batchSize := cfg.BatchSize
+	skipErrors := cfg.SkipErrors
+	skipFirstRow := cfg.SkipFirstRow
+	identityInsert := cfg.IdentityInsert
+	binaryFormat := cfg.BinaryFormat
+	nullMarker := cfg.NullMarker
 	// 开始事务
 	tx, err := db.Begin()
 	if err != nil {
@@ -237,7 +275,7 @@ func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []Co
 			tx.Rollback()
 			return fmt.Errorf("启用 IDENTITY_INSERT 失败: %w", err)
 		}
-		fmt.Println("ℹ️  已启用 IDENTITY_INSERT")
+		fmt.Println("[INFO] 已启用 IDENTITY_INSERT")
 	}
 
 	// 预处理插入语句
@@ -372,9 +410,9 @@ func batchInsert(db *sql.DB, insertSQL string, reader *csv.Reader, safeCols []Co
 	}
 
 	// 输出结果
-	fmt.Printf("✅ CSV导入完成，共插入 %d 行数据\n", totalCount)
+	fmt.Printf("[OK] CSV导入完成，共插入 %d 行数据\n", totalCount)
 	if len(errorRows) > 0 {
-		fmt.Printf("⚠️  跳过 %d 行错误数据: %v\n", len(errorRows), errorRows)
+		fmt.Printf("[WARN] 跳过 %d 行错误数据: %v\n", len(errorRows), errorRows)
 	}
 
 	return nil
