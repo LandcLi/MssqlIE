@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mssql_ie/config"
-	"github.com/mssql_ie/conn"
-	"github.com/mssql_ie/exporter"
-	"github.com/mssql_ie/importer"
+	"github.com/LandcLi/MssqlIE/config"
+	"github.com/LandcLi/MssqlIE/conn"
+	"github.com/LandcLi/MssqlIE/exporter"
+	"github.com/LandcLi/MssqlIE/importer"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/term"
 )
 
 var (
+	// version 等默认值仅用于本地 go run 开发；正式发布由 Makefile/CI 通过 -ldflags 注入
 	version = "1.0.0"
 	commit  = "unknown"
 	date    = "unknown"
@@ -49,11 +51,10 @@ func main() {
 				EnvVars: []string{"MSSQL_USER", "DB_USER"},
 			},
 			&cli.StringFlag{
-				Name:     "password",
-				Aliases:  []string{"W"},
-				Usage:    "数据库密码",
-				Required: true,
-				EnvVars:  []string{"MSSQL_PASSWORD", "DB_PASSWORD"},
+				Name:    "password",
+				Aliases: []string{"W"},
+				Usage:   "数据库密码（优先使用环境变量 MSSQL_PASSWORD，避免明文出现在进程列表/日志）",
+				EnvVars: []string{"MSSQL_PASSWORD", "DB_PASSWORD"},
 			},
 			&cli.StringFlag{
 				Name:     "db",
@@ -128,21 +129,26 @@ func main() {
 						Usage:   "二进制数格式 {hex, base64, raw}",
 						Value:   "raw",
 					},
-			&cli.StringFlag{
-				Name:    "file-charset",
-				Aliases: []string{"fc"},
-				Usage:   "文件的字符集 {utf8,gbk,latin1}",
-				Value:   "utf8",
+					&cli.StringFlag{
+						Name:    "file-charset",
+						Aliases: []string{"fc"},
+						Usage:   "文件的字符集 {utf8,gbk,latin1}",
+						Value:   "utf8",
+					},
+					&cli.StringFlag{
+						Name:  "null-marker",
+						Usage: "NULL 值在 CSV 中的标记字符串，为空时用空字段表示 NULL",
+						Value: "",
+					},
+					&cli.BoolFlag{
+						Name:  "force",
+						Usage: "输出文件已存在时直接覆盖（默认报错退出）",
+						Value: false,
+					},
+				},
+				Before: validateExportFlags,
+				Action: exportCommand,
 			},
-			&cli.StringFlag{
-				Name:  "null-marker",
-				Usage: "NULL 值在 CSV 中的标记字符串，为空时用空字段表示 NULL",
-				Value: "",
-			},
-		},
-		Before: validateExportFlags,
-		Action: exportCommand,
-	},
 			{
 				Name:    "import",
 				Aliases: []string{"i"},
@@ -176,42 +182,47 @@ func main() {
 						Usage: "CSV分隔符",
 						Value: ",",
 					},
-			&cli.BoolFlag{
-				Name:  "truncate",
-				Usage: "导入前清空表",
-				Value: false,
+					&cli.BoolFlag{
+						Name:  "truncate",
+						Usage: "导入前清空表",
+						Value: false,
+					},
+					&cli.BoolFlag{
+						Name:  "skip-errors",
+						Usage: "跳过错误行继续导入",
+						Value: false,
+					},
+					&cli.BoolFlag{
+						Name:  "identity-insert",
+						Usage: "允许为自增列插入显式值 (SET IDENTITY_INSERT ON)",
+						Value: false,
+					},
+					&cli.StringFlag{
+						Name:    "binary-format",
+						Aliases: []string{"bf"},
+						Usage:   "二进制数格式 {hex, base64, raw}",
+						Value:   "raw",
+					},
+					&cli.StringFlag{
+						Name:    "file-charset",
+						Aliases: []string{"fc"},
+						Usage:   "文件的字符集 {utf8,gbk,latin1}",
+						Value:   "utf8",
+					},
+					&cli.StringFlag{
+						Name:  "null-marker",
+						Usage: "CSV 中代表 NULL 的字符串，为空时空字段视为 NULL",
+						Value: "",
+					},
+					&cli.BoolFlag{
+						Name:  "fill-defaults",
+						Usage: "非空约束列为空时填充默认值(0/false/'')，默认报错退出",
+						Value: false,
+					},
+				},
+				Before: validateImportFlags,
+				Action: importCommand,
 			},
-			&cli.BoolFlag{
-				Name:  "skip-errors",
-				Usage: "跳过错误行继续导入",
-				Value: false,
-			},
-			&cli.BoolFlag{
-				Name:  "identity-insert",
-				Usage: "允许为自增列插入显式值 (SET IDENTITY_INSERT ON)",
-				Value: false,
-			},
-			&cli.StringFlag{
-				Name:    "binary-format",
-				Aliases: []string{"bf"},
-				Usage:   "二进制数格式 {hex, base64, raw}",
-				Value:   "raw",
-			},
-			&cli.StringFlag{
-				Name:    "file-charset",
-				Aliases: []string{"fc"},
-				Usage:   "文件的字符集 {utf8,gbk,latin1}",
-				Value:   "utf8",
-			},
-			&cli.StringFlag{
-				Name:  "null-marker",
-				Usage: "CSV 中代表 NULL 的字符串，为空时空字段视为 NULL",
-				Value: "",
-			},
-		},
-		Before: validateImportFlags,
-		Action: importCommand,
-	},
 			{
 				Name:    "test",
 				Aliases: []string{"t"},
@@ -220,8 +231,25 @@ func main() {
 			},
 		},
 		Before: func(c *cli.Context) error {
+			// 无子命令（仅显示帮助）时不做密码校验
+			if !c.Args().Present() {
+				return nil
+			}
 			if c.String("password") == "" {
-				return cli.Exit("错误: 密码不能为空，请通过 -password 参数或环境变量设置", 1)
+				// 交互式输入（仅 TTY），避免密码出现在 shell 历史/进程列表
+				if term.IsTerminal(int(os.Stdin.Fd())) {
+					fmt.Fprint(os.Stderr, "请输入数据库密码: ")
+					pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+					fmt.Fprintln(os.Stderr)
+					if err != nil {
+						return cli.Exit(fmt.Sprintf("错误: 读取密码失败: %v", err), 1)
+					}
+					if len(pw) == 0 {
+						return cli.Exit("错误: 密码不能为空", 1)
+					}
+					return c.Set("password", string(pw))
+				}
+				return cli.Exit("错误: 密码不能为空，请通过 -password 参数、环境变量 MSSQL_PASSWORD 或交互式输入设置", 1)
 			}
 			return nil
 		},
@@ -231,7 +259,7 @@ func main() {
 		},
 		ExitErrHandler: func(c *cli.Context, err error) {
 			if err != nil {
-				fmt.Fprintf(c.App.Writer, "[ERROR] %v\n", err)
+				fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
 			}
 		},
 	}
@@ -302,7 +330,7 @@ func exportCommand(c *cli.Context) error {
 		}
 	}
 
-	fmt.Printf("[OK] 导出成功: 数据已保存到 %s\n", cfg.CSVPath)
+	fmt.Fprintf(os.Stderr, "[OK] 导出成功: 数据已保存到 %s\n", cfg.CSVPath)
 	return nil
 }
 
@@ -337,13 +365,14 @@ func importCommand(c *cli.Context) error {
 		BinaryFormat:   c.String("binary-format"),
 		FileCharset:    c.String("file-charset"),
 		NullMarker:     c.String("null-marker"),
+		FillDefaults:   c.Bool("fill-defaults"),
 	}
 
 	if err := importer.CSVToTable(db, cfg); err != nil {
 		return fmt.Errorf("导入失败: %w", err)
 	}
 
-	fmt.Printf("[OK] 导入成功: 数据已导入到表 %s\n", cfg.Table)
+	fmt.Fprintf(os.Stderr, "[OK] 导入成功: 数据已导入到表 %s\n", cfg.Table)
 	return nil
 }
 
@@ -388,15 +417,9 @@ func validateExportFlags(c *cli.Context) error {
 		return cli.Exit("错误: 必须且只能指定 --table 或 --sql 参数之一", 1)
 	}
 
-	// 检查文件是否可以创建
-	if _, err := os.Stat(csv); err == nil {
-		// 文件已存在，询问是否覆盖
-		fmt.Printf("警告: 文件 %s 已存在，是否覆盖? (y/N): ", csv)
-		var response string
-		fmt.Scanln(&response)
-		if response != "y" && response != "Y" {
-			return cli.Exit("操作已取消", 0)
-		}
+	// 输出文件已存在时，需显式 --force 才覆盖（避免交互确认在 CI/管道中挂起）
+	if _, err := os.Stat(csv); err == nil && !c.Bool("force") {
+		return cli.Exit(fmt.Sprintf("错误: 输出文件已存在: %s。如需覆盖请添加 --force 参数", csv), 1)
 	}
 
 	return nil

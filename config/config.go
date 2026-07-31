@@ -42,5 +42,6 @@ type ImportConfig struct {
 	BinaryFormat   string
 	FileCharset    string
 	NullMarker     string    // CSV 中代表 NULL 的字符串，空字符串时空字段=null
+	FillDefaults   bool      // 非空约束列为空时填充默认值(0/false/'')，默认报错
 	Input          io.Reader // 可选: 从流读取，优先级高于 CSVPath
 }

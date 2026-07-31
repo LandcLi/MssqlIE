@@ -11,7 +11,7 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 	"github.com/microsoft/go-mssqldb/msdsn"
 
-	"github.com/mssql_ie/config"
+	"github.com/LandcLi/MssqlIE/config"
 )
 
 // Connect 建立并返回SQL Server数据库连接

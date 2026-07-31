@@ -1,10 +1,13 @@
 package importer
 
 import (
+	"encoding/csv"
+	"regexp"
 	"strings"
 	"testing"
 
-	"github.com/mssql_ie/config"
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/LandcLi/MssqlIE/config"
 )
 
 func TestValidateImportConfig(t *testing.T) {
@@ -250,5 +253,125 @@ func TestCSVToTable_Validation(t *testing.T) {
 	err := CSVToTable(nil, cfg)
 	if err == nil {
 		t.Error("expected error for empty table, got nil")
+	}
+}
+
+func TestBatchInsert_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("创建 sqlmock 失败: %v", err)
+	}
+	defer db.Close()
+
+	insertSQL := "INSERT INTO [users] ([id],[name]) VALUES (?,?)"
+
+	mock.ExpectBegin()
+	mock.ExpectPrepare(regexp.QuoteMeta(insertSQL))
+	mock.ExpectExec(regexp.QuoteMeta(insertSQL)).WithArgs("1", "John").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(insertSQL)).WithArgs("2", "Jane").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	// 批次提交后开启新事务并重新预处理（读到 EOF 后不再有 Exec/Commit）
+	mock.ExpectBegin()
+	mock.ExpectPrepare(regexp.QuoteMeta(insertSQL))
+
+	reader := csv.NewReader(strings.NewReader("1,John\n2,Jane\n"))
+	cols := []ColumnInfo{
+		{Name: "id", DataType: "int", Nullable: false},
+		{Name: "name", DataType: "nvarchar", Nullable: false},
+	}
+
+	err = batchInsert(BatchInsertConfig{
+		DB:        db,
+		InsertSQL: insertSQL,
+		Reader:    reader,
+		Columns:   cols,
+		TableName: "users",
+		BatchSize: 2,
+	})
+	if err != nil {
+		t.Fatalf("batchInsert 意外错误: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("存在未满足的 mock 期望: %v", err)
+	}
+}
+
+func TestBatchInsert_NonNullableEmptyColumn_Error(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("创建 sqlmock 失败: %v", err)
+	}
+	defer db.Close()
+
+	insertSQL := "INSERT INTO [users] ([id],[name]) VALUES (?,?)"
+
+	mock.ExpectBegin()
+	mock.ExpectPrepare(regexp.QuoteMeta(insertSQL))
+	// 空字段遇非空约束列应报错并回滚，不应执行任何 Exec
+	mock.ExpectRollback()
+
+	reader := csv.NewReader(strings.NewReader("1,\n"))
+	cols := []ColumnInfo{
+		{Name: "id", DataType: "int", Nullable: false},
+		{Name: "name", DataType: "nvarchar", Nullable: false},
+	}
+
+	err = batchInsert(BatchInsertConfig{
+		DB:        db,
+		InsertSQL: insertSQL,
+		Reader:    reader,
+		Columns:   cols,
+		TableName: "users",
+		BatchSize: 100,
+	})
+	if err == nil {
+		t.Fatal("期望空字段遇到非空约束列时报错，但返回 nil")
+	}
+	if !strings.Contains(err.Error(), "不允许NULL") {
+		t.Errorf("错误信息不符合预期: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("存在未满足的 mock 期望: %v", err)
+	}
+}
+
+func TestBatchInsert_FillDefaults(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("创建 sqlmock 失败: %v", err)
+	}
+	defer db.Close()
+
+	insertSQL := "INSERT INTO [users] ([id],[name]) VALUES (?,?)"
+
+	mock.ExpectBegin()
+	mock.ExpectPrepare(regexp.QuoteMeta(insertSQL))
+	// fill-defaults 开启时，空字段填充默认值（nvarchar -> ""）
+	mock.ExpectExec(regexp.QuoteMeta(insertSQL)).WithArgs("1", "").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	reader := csv.NewReader(strings.NewReader("1,\n"))
+	cols := []ColumnInfo{
+		{Name: "id", DataType: "int", Nullable: false},
+		{Name: "name", DataType: "nvarchar", Nullable: false},
+	}
+
+	err = batchInsert(BatchInsertConfig{
+		DB:           db,
+		InsertSQL:    insertSQL,
+		Reader:       reader,
+		Columns:      cols,
+		TableName:    "users",
+		BatchSize:    100,
+		FillDefaults: true,
+	})
+	if err != nil {
+		t.Fatalf("batchInsert 意外错误: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("存在未满足的 mock 期望: %v", err)
 	}
 }

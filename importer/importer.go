@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mssql_ie/config"
-	"github.com/mssql_ie/utils"
+	"github.com/LandcLi/MssqlIE/config"
+	"github.com/LandcLi/MssqlIE/utils"
 )
 
 // noopReadCloser 包装 io.Reader 为 io.ReadCloser（Close 无操作）
@@ -117,6 +117,7 @@ func CSVToTable(db *sql.DB, cfg config.ImportConfig) error {
 		IdentityInsert: cfg.IdentityInsert,
 		BinaryFormat:   cfg.BinaryFormat,
 		NullMarker:     cfg.NullMarker,
+		FillDefaults:   cfg.FillDefaults,
 	})
 }
 
@@ -143,22 +144,31 @@ type ColumnInfo struct {
 
 // getTableColumns 从数据库获取表的列名
 func getTableColumns(db *sql.DB, tableName string) ([]ColumnInfo, error) {
-	// 转义表名
-	escapedTable, err := utils.EscapeQualifiedName(tableName)
+	// 解析限定名（schema.table）
+	parts, err := utils.SplitQualifiedName(tableName)
 	if err != nil {
-		return nil, fmt.Errorf("转义表名失败: %w", err)
+		return nil, fmt.Errorf("解析表名失败: %w", err)
+	}
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("表名不能为空")
 	}
 
-	query := fmt.Sprintf(`
+	schema := "dbo"
+	table := parts[len(parts)-1]
+	if len(parts) >= 2 {
+		schema = parts[len(parts)-2]
+	}
+
+	// 参数化查询，避免字符串拼接
+	query := `
 		/* mssql_ie tool query for check column*/
 		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COALESCE(CHARACTER_MAXIMUM_LENGTH, 0)
 		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE TABLE_SCHEMA = COALESCE(PARSENAME('%s', 2), 'dbo')
-			AND TABLE_NAME = PARSENAME('%s', 1)
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
 		ORDER BY ORDINAL_POSITION
-	`, escapedTable, escapedTable)
+	`
 
-	rows, err := db.Query(query)
+	rows, err := db.Query(query, schema, table)
 	if err != nil {
 		return nil, fmt.Errorf("查询表结构失败: %w", err)
 	}
@@ -235,6 +245,7 @@ type BatchInsertConfig struct {
 	IdentityInsert bool
 	BinaryFormat   string
 	NullMarker     string
+	FillDefaults   bool
 }
 
 // batchInsert 批量插入数据
@@ -250,6 +261,7 @@ func batchInsert(cfg BatchInsertConfig) error {
 	identityInsert := cfg.IdentityInsert
 	binaryFormat := cfg.BinaryFormat
 	nullMarker := cfg.NullMarker
+	fillDefaults := cfg.FillDefaults
 	// 开始事务
 	tx, err := db.Begin()
 	if err != nil {
@@ -275,7 +287,7 @@ func batchInsert(cfg BatchInsertConfig) error {
 			tx.Rollback()
 			return fmt.Errorf("启用 IDENTITY_INSERT 失败: %w", err)
 		}
-		fmt.Println("[INFO] 已启用 IDENTITY_INSERT")
+		fmt.Fprintln(os.Stderr, "[INFO] 已启用 IDENTITY_INSERT")
 	}
 
 	// 预处理插入语句
@@ -333,18 +345,22 @@ func batchInsert(cfg BatchInsertConfig) error {
 				} else {
 					args[i], err = convertValue(v, safeCols[i], binaryFormat)
 				}
-			} else {
-				// 传统模式：空字段 = NULL
-				if v == "" {
-					if safeCols[i].Nullable {
-						setArgToNull(&args[i], safeCols[i])
-					} else {
-						args[i] = getDefaultValue(safeCols[i].DataType)
-					}
+		} else {
+			// 传统模式：空字段 = NULL
+			if v == "" {
+				if safeCols[i].Nullable {
+					setArgToNull(&args[i], safeCols[i])
+				} else if fillDefaults {
+					args[i] = getDefaultValue(safeCols[i].DataType)
 				} else {
-					args[i], err = convertValue(v, safeCols[i], binaryFormat)
+					tx.Rollback()
+					return fmt.Errorf("行%d列%d(%s)为空，但该列不允许NULL。请填充数据或使用 --fill-defaults 显式填充默认值",
+						rowNum, i+1, safeCols[i].Name)
 				}
+			} else {
+				args[i], err = convertValue(v, safeCols[i], binaryFormat)
 			}
+		}
 			if err != nil {
 				if skipErrors {
 					errorRows = append(errorRows, rowNum)
@@ -398,7 +414,7 @@ func batchInsert(cfg BatchInsertConfig) error {
 			}
 			batchCount = 0
 
-			fmt.Printf("已导入 %d 行...\n", totalCount)
+			fmt.Fprintf(os.Stderr, "已导入 %d 行...\n", totalCount)
 		}
 	}
 
@@ -410,9 +426,9 @@ func batchInsert(cfg BatchInsertConfig) error {
 	}
 
 	// 输出结果
-	fmt.Printf("[OK] CSV导入完成，共插入 %d 行数据\n", totalCount)
+	fmt.Fprintf(os.Stderr, "[OK] CSV导入完成，共插入 %d 行数据\n", totalCount)
 	if len(errorRows) > 0 {
-		fmt.Printf("[WARN] 跳过 %d 行错误数据: %v\n", len(errorRows), errorRows)
+		fmt.Fprintf(os.Stderr, "[WARN] 跳过 %d 行错误数据: %v\n", len(errorRows), errorRows)
 	}
 
 	return nil

@@ -69,6 +69,50 @@ func TestEscapeQualifiedName(t *testing.T) {
 	}
 }
 
+func TestSplitQualifiedName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+		wantErr  bool
+	}{
+		{"empty string", "", nil, false},
+		{"simple table", "users", []string{"users"}, false},
+		{"schema.table", "dbo.users", []string{"dbo", "users"}, false},
+		{"already escaped", "[dbo].[users]", []string{"dbo", "users"}, false},
+		{"three parts", "db.dbo.users", []string{"db", "dbo", "users"}, false},
+		{"four parts", "srv.db.dbo.users", []string{"srv", "db", "dbo", "users"}, false},
+		{"invalid char", "user name!", nil, true},
+		{"unmatched bracket", "[users", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := SplitQualifiedName(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("SplitQualifiedName(%q) expected error, got %v", tt.input, result)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("SplitQualifiedName(%q) unexpected error: %v", tt.input, err)
+				return
+			}
+			if len(result) != len(tt.expected) {
+				t.Errorf("SplitQualifiedName(%q) = %v, want %v", tt.input, result, tt.expected)
+				return
+			}
+			for i := range result {
+				if result[i] != tt.expected[i] {
+					t.Errorf("SplitQualifiedName(%q) = %v, want %v", tt.input, result, tt.expected)
+					break
+				}
+			}
+		})
+	}
+}
+
 func TestIsValidGUID(t *testing.T) {
 	tests := []struct {
 		input string

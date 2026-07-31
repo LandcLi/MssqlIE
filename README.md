@@ -6,7 +6,9 @@ MssqlIE（MSSQL Import/Export）是一个功能强大的命令行工具，用于
 
 ## 版本信息
 
-当前版本：**v0.1**
+当前版本：**v1.0.0**
+
+> 版本号由构建工具通过 `-ldflags "-X main.version=..."` 注入，可在 `make build` 或 CI 发布时自动跟随 Git tag。
 
 ## 功能特性
 
@@ -38,21 +40,27 @@ MssqlIE（MSSQL Import/Export）是一个功能强大的命令行工具，用于
 ## 安装方法
 
 ### 前提条件
-- Go 1.16 或更高版本
+- Go 1.19 或更高版本
 - SQL Server 2008 或更高版本
 
 ### 编译安装
 
 ```bash
 # 克隆仓库
-git clone https://github.com/nian0204/MssqlIE.git
-cd mssql-ie
+git clone https://github.com/LandcLi/MssqlIE.git
+cd MssqlIE
 
 # 编译
-go build -o mssql-ie main.go
+go build -o mssql-ie .
 
 # 运行
 ./mssql-ie --help
+```
+
+### 直接安装（Go 1.19+）
+
+```bash
+go install github.com/LandcLi/MssqlIE@latest
 ```
 
 ### 直接使用
@@ -106,6 +114,7 @@ mssql-ie [全局参数] export [命令参数]
 | --limit | -l | 0 | 限制导出记录数（0 表示无限制） |
 | --binary-format | -bf | raw | 二进制数格式 {hex, base64, raw} |
 | --file-charset | -fc | utf8 | 文件的字符集 {utf8, gbk, iso-8859-1} |
+| --force | - | false | 输出文件已存在时直接覆盖（默认报错退出） |
 
 #### 2. 导入数据 (import)
 
@@ -126,6 +135,7 @@ mssql-ie [全局参数] import [命令参数]
 | --skip-errors | - | false | 跳过错误行继续导入 |
 | --binary-format | -bf | raw | 二进制数格式 {hex, base64, raw} |
 | --file-charset | -fc | utf8 | 文件的字符集 {utf8, gbk, iso-8859-1} |
+| --fill-defaults | - | false | 非空约束列为空时填充默认值(0/false/'')，默认报错退出 |
 
 #### 3. 测试连接 (test)
 
@@ -217,10 +227,15 @@ mssql-ie -S localhost -P 1433 -U sa -W your_password -D your_database import -t 
 
 ## 安全注意事项
 
-1. **密码安全**：避免在命令行中直接输入密码，建议使用环境变量
-2. **数据安全**：在生产环境中使用时，确保适当的权限控制
-3. **SQL 注入防护**：工具内部已实现 SQL 标识符的安全转义
-4. **网络安全**：在不安全的网络环境中，建议启用加密连接（--encrypt 选项）
+1. **密码安全**：
+   - 优先使用环境变量 `MSSQL_PASSWORD`（推荐，CI 中必须使用环境变量）
+   - 未提供密码且终端为交互模式时，工具会隐藏回显地提示输入密码
+   - 避免使用 `-W` 明文传参：密码会出现在 shell 历史、进程列表（`ps`）和 CI 日志中
+2. **自定义 SQL 警示**：`--sql` 参数由用户自写并**原样执行**，工具仅对表名/列名做安全转义，请勿传入不可信来源的 SQL
+3. **导入空字段**：非空约束列遇空字段会**报错退出**（防止静默写入错误默认值）；如确实需要填充默认值，请显式使用 `--fill-defaults`
+4. **二进制原始模式**：`-bf raw` 将原始字节写入 CSV，非 UTF-8 数据可能损坏，建议使用 `hex` 或 `base64`
+5. **数据安全**：在生产环境中使用时，确保适当的权限控制
+6. **网络安全**：在不安全的网络环境中，建议启用加密连接（--encrypt 选项）
 
 ## 性能优化
 
@@ -247,9 +262,9 @@ mssql-ie -S localhost -P 1433 -U sa -W your_password -D your_database import -t 
 
 如有问题或建议，请通过以下方式联系：
 
-- 项目地址：[GitHub Repository](https://github.com/your-repo/mssql-ie)
+- 项目地址：[GitHub Repository](https://github.com/LandcLi/MssqlIE)
 - 邮箱：206131925@qq.com
 
 ---
 
-**MssqlIE v0.1** - 让 SQL Server 数据导入导出变得简单高效！
+**MssqlIE v1.0.0** - 让 SQL Server 数据导入导出变得简单高效！

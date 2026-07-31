@@ -145,6 +145,16 @@ func isBracketedIdentifier(s string) bool {
 	return len(s) >= 2 && s[0] == '[' && s[len(s)-1] == ']'
 }
 
+// SplitQualifiedName 将限定名拆分为未转义的各部分
+// 支持格式: table, schema.table, [schema].[table]
+// 返回: 如 ["dbo", "users"]，不含转义括号
+func SplitQualifiedName(name string) ([]string, error) {
+	if name == "" {
+		return nil, nil
+	}
+	return parseQualifiedName(strings.TrimSpace(name))
+}
+
 // EscapeError 转义错误
 type EscapeError struct {
 	Message string

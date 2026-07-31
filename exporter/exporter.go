@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mssql_ie/config"
-	"github.com/mssql_ie/utils"
+	"github.com/LandcLi/MssqlIE/config"
+	"github.com/LandcLi/MssqlIE/utils"
 )
 
 // noopWriteCloser 包装 io.Writer 为 io.WriteCloser（Close 无操作）
@@ -42,7 +42,6 @@ func TableToCSV(db *sql.DB, cfg config.ExportConfig) error {
 	// 构建查询
 	var query string
 	if cfg.Limit > 0 {
-		query = fmt.Sprintf("SELECT * FROM %s", escapedTable)
 		// 添加TOP限制
 		query = fmt.Sprintf("SELECT TOP %d * FROM %s", cfg.Limit, escapedTable)
 	} else {
@@ -150,9 +149,9 @@ func exportQueryResultToCSV(db *sql.DB, query string, cfg config.ExportConfig) e
 		}
 		rowCount++
 
-		// 输出进度
+		// 输出进度到 stderr，避免污染 stdout 管道
 		if rowCount%10000 == 0 {
-			fmt.Printf("已处理 %d 行...\n", rowCount)
+			fmt.Fprintf(os.Stderr, "已处理 %d 行...\n", rowCount)
 		}
 
 		// 如果设置了限制，检查是否达到限制
@@ -166,9 +165,9 @@ func exportQueryResultToCSV(db *sql.DB, query string, cfg config.ExportConfig) e
 	}
 
 	if cfg.CSVPath != "" {
-		fmt.Printf("✅ 导出完成，共 %d 行数据，文件路径: %s\n", rowCount, cfg.CSVPath)
+		fmt.Fprintf(os.Stderr, "[OK] 导出完成，共 %d 行数据，文件路径: %s\n", rowCount, cfg.CSVPath)
 	} else {
-		fmt.Printf("✅ 导出完成，共 %d 行数据\n", rowCount)
+		fmt.Fprintf(os.Stderr, "[OK] 导出完成，共 %d 行数据\n", rowCount)
 	}
 	return nil
 }

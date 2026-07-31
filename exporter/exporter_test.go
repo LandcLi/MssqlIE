@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mssql_ie/config"
+	"github.com/LandcLi/MssqlIE/config"
 )
 
 func TestTableToCSV_EmptyTable(t *testing.T) {
